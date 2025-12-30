@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+python-multipart
+# Add your ML libraries later, e.g., torch, numpy, etc.

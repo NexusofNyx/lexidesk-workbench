@@ -3,6 +3,9 @@
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
+// ----------------------------
+// TypeScript Interfaces
+// ----------------------------
 export interface SentenceDetectionRequest {
   text: string;
 }
@@ -47,48 +50,48 @@ export interface DocumentUploadResponse {
   status: string;
 }
 
-// Health check to verify backend connection
+// ----------------------------
+// Health Check
+// ----------------------------
 export async function checkBackendHealth(): Promise<boolean> {
   try {
-    const response = await fetch(`${API_BASE_URL}/health`, {
-      method: 'GET',
-    });
+    const response = await fetch(`${API_BASE_URL}/health`, { method: 'GET' });
     return response.ok;
   } catch {
     return false;
   }
 }
 
-// Sentence Boundary Detection API
-// Connects to the CNN-CRF model in predict.py
-export async function detectSentences(text: string): Promise<SentenceDetectionResponse> {
+// ----------------------------
+// Sentence Boundary Detection
+// ----------------------------
+export async function detectSentences(
+  text: string
+): Promise<SentenceDetectionResponse> {
   const response = await fetch(`${API_BASE_URL}/predict`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Sentence detection failed: ${error}`);
+    const errorText = await response.text();
+    throw new Error(`Sentence detection failed: ${errorText}`);
   }
 
-  return await response.json();
+  return response.json();
 }
 
-// Extractive Summarization API
-// Connects to the LegalSummarizer in src/summarizer.py
+// ----------------------------
+// Extractive Summarization
+// ----------------------------
 export async function summarizeText(
   text: string,
   options?: { compression_ratio?: number; top_k?: number }
 ): Promise<SummarizationResponse> {
   const response = await fetch(`${API_BASE_URL}/summarize`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       text,
       compression: options?.compression_ratio,
@@ -104,7 +107,9 @@ export async function summarizeText(
   return await response.json();
 }
 
-// Document Upload API for RAG chatbot
+// ----------------------------
+// Document Upload for RAG
+// ----------------------------
 export async function uploadDocument(file: File): Promise<DocumentUploadResponse> {
   const formData = new FormData();
   formData.append('file', file);
@@ -122,20 +127,17 @@ export async function uploadDocument(file: File): Promise<DocumentUploadResponse
   return await response.json();
 }
 
-// Chat/RAG API for legal document Q&A
+// ----------------------------
+// Chat / RAG Q&A
+// ----------------------------
 export async function sendChatMessage(
   question: string,
   documentId?: string
 ): Promise<ChatResponse> {
   const response = await fetch(`${API_BASE_URL}/chat`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      question,
-      document_id: documentId,
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, document_id: documentId }),
   });
 
   if (!response.ok) {
