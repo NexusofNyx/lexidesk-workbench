@@ -42,7 +42,7 @@ export default function Chatbot() {
       const result = await uploadDocument(file);
       setUploadedFile({ name: result.filename, id: result.document_id });
       toast.success(`Document "${result.filename}" uploaded successfully`);
-      
+
       // Add system message
       setMessages(prev => [
         ...prev,
@@ -75,6 +75,11 @@ export default function Chatbot() {
   const handleSendMessage = async () => {
     if (!inputValue.trim() || isLoading) return;
 
+    if (!uploadedFile) {
+      toast.error('Please upload a document before asking questions');
+      return;
+    }
+
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -82,13 +87,21 @@ export default function Chatbot() {
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `assistant-error-${Date.now()}`,
+        role: 'assistant',
+        content: 'Sorry, I encountered an error while processing your question.',
+        timestamp: new Date(),
+      },
+    ]);
     setInputValue('');
     setIsLoading(true);
 
     try {
       const response = await sendChatMessage(userMessage.content, uploadedFile?.id);
-      
+
       const assistantMessage: Message = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
@@ -150,7 +163,7 @@ export default function Chatbot() {
             onChange={handleFileUpload}
             className="hidden"
           />
-          
+
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={isUploading}
@@ -204,7 +217,7 @@ export default function Chatbot() {
                   Start a Conversation
                 </h3>
                 <p className="text-sm text-muted-foreground max-w-md">
-                  Upload a legal document and ask questions about its contents, 
+                  Upload a legal document and ask questions about its contents,
                   or simply ask general legal questions.
                 </p>
               </div>
@@ -219,12 +232,12 @@ export default function Chatbot() {
                       <Bot className="w-4 h-4 text-primary" />
                     </div>
                   )}
-                  
+
                   <div className={message.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}>
                     <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
                       {message.content}
                     </p>
-                    
+
                     {/* Relevant Passages */}
                     {message.relevantPassages && message.relevantPassages.length > 0 && (
                       <div className="mt-3 pt-3 border-t border-border/30">
@@ -255,7 +268,7 @@ export default function Chatbot() {
                 </div>
               ))
             )}
-            
+
             {isLoading && (
               <div className="flex gap-3 animate-fade-in">
                 <div className="w-8 h-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
@@ -267,7 +280,7 @@ export default function Chatbot() {
                 </div>
               </div>
             )}
-            
+
             <div ref={messagesEndRef} />
           </div>
 

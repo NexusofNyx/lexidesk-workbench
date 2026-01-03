@@ -26,6 +26,7 @@ export default function Summarizer() {
       const response = await summarizeText(inputText, {
         top_k: topK,
         compression_ratio: compressionRatio,
+        preserve_order: true, // ensure original sentence order is maintained
       });
       setResult(response);
       toast.success('Summary generated successfully');
@@ -57,9 +58,12 @@ export default function Summarizer() {
     setResult(null);
   };
 
-  const compressionPercentage = result
-    ? Math.round((1 - result.summary_sentence_count / result.original_sentence_count) * 100)
-    : 0;
+  const compressionPercentage =
+    result && result.original_sentence_count > 0
+      ? Math.round(
+        (1 - result.summary_sentence_count / result.original_sentence_count) * 100
+      )
+      : 0;
 
   return (
     <DashboardLayout>

@@ -87,15 +87,16 @@ export async function detectSentences(
 // ----------------------------
 export async function summarizeText(
   text: string,
-  options?: { compression_ratio?: number; top_k?: number }
+  options?: { compression_ratio?: number; top_k?: number; preserve_order?: boolean }
 ): Promise<SummarizationResponse> {
   const response = await fetch(`${API_BASE_URL}/summarize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       text,
-      compression: options?.compression_ratio,
+      compression_ratio: options?.compression_ratio, // ✅ match backend key
       top_k: options?.top_k,
+      preserve_order: options?.preserve_order ?? true,
     }),
   });
 
