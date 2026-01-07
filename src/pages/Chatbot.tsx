@@ -87,27 +87,19 @@ export default function Chatbot() {
       timestamp: new Date(),
     };
 
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `assistant-error-${Date.now()}`,
-        role: 'assistant',
-        content: 'Sorry, I encountered an error while processing your question.',
-        timestamp: new Date(),
-      },
-    ]);
+    setMessages(prev => [...prev, userMessage]);
     setInputValue('');
     setIsLoading(true);
 
     try {
-      const response = await sendChatMessage(userMessage.content, uploadedFile?.id);
+      const response = await sendChatMessage(userMessage.content);
 
       const assistantMessage: Message = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
         content: response.answer,
         timestamp: new Date(),
-        relevantPassages: response.relevant_passages,
+        relevantPassages: response.sources.map(s => s.text),
       };
 
       setMessages(prev => [...prev, assistantMessage]);

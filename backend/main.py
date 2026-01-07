@@ -5,6 +5,12 @@ from typing import Optional, List
 from dotenv import load_dotenv
 from pathlib import Path
 import os
+import shutil
+import uuid
+
+# Import ingestion + indexing logic
+from lexidesk_chatbot.ingest.ingest import run as ingest_run
+from lexidesk_chatbot.embeddings.indexer import build_index
 
 # --------------------------------------------------
 # Load .env as early as possible (before imports that use GEMINI_API_KEY)
@@ -27,7 +33,6 @@ from src.summarizer import SentenceSummarizer
 # --------------------------------------------------
 # Import AFTER .env is loaded
 from lexidesk_chatbot.api.router import router as chatbot_router
-from lexidesk_chatbot.ingest.ingest import ingest_document
 
 # --------------------------------------------------
 # App initialization
@@ -140,23 +145,44 @@ def summarize(req: SummarizationRequest):
     )
 
 # --------------------------------------------------
-# PDF Upload & Ingestion
+# PDF Upload & Ingestion (FULL PIPELINE)
 # --------------------------------------------------
 @app.post("/upload", response_model=DocumentUploadResponse)
 def upload(file: UploadFile = File(...)):
     try:
-        document_id = ingest_document(file)
+        # --------------------------------------------------
+        # 1. Save uploaded PDF to a temp location
+        # --------------------------------------------------
+        uploads_dir = Path("uploads")
+        uploads_dir.mkdir(exist_ok=True)
 
-        # 🔥 ADD THIS
-        build_index(reset=False)
+        document_id = str(uuid.uuid4())
+        pdf_path = uploads_dir / f"{document_id}_{file.filename}"
+
+        with open(pdf_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # --------------------------------------------------
+        # 2. Run INGESTION (same as terminal)
+        # python ingest/ingest.py file.pdf
+        # --------------------------------------------------
+        ingest_run([str(pdf_path)])
+
+        # --------------------------------------------------
+        # 3. Build / update FAISS index
+        # python embeddings/indexer.py
+        # --------------------------------------------------
+        build_index()
 
         return {
             "document_id": document_id,
             "filename": file.filename,
             "status": "ingested_and_indexed"
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 # --------------------------------------------------
 # Mount Chatbot Router
 # --------------------------------------------------

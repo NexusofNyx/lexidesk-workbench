@@ -1,165 +1,193 @@
 """
-Ingest PDFs -> page-level text -> sentence segmentation (CNN + CRF)
+Ingest PDFs -> page-level text -> sentence segmentation
 Produces:
-- lexidesk_chatbot/data/lexidesk_pages.jsonl
-- lexidesk_chatbot/data/chunks.jsonl
+- backend/lexidesk_chatbot/data/lexidesk_pages.jsonl
+- backend/lexidesk_chatbot/data/chunks.jsonl
 """
 
 from pathlib import Path
 import json
-import fitz  # PyMuPDF
+import fitz  # pymupdf
+import sys
+import importlib.util
 import re
+import shutil
 from tempfile import NamedTemporaryFile
-from typing import List
 
 # --------------------------------------------------
-# Correct import (NO indexer here)
-# --------------------------------------------------
-from lexidesk_chatbot.segmenter import segment_text
-
-# --------------------------------------------------
-# Resolve backend root
+# Resolve BACKEND root
+# ingest.py → ingest → lexidesk_chatbot → backend
 # --------------------------------------------------
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
+# Make backend importable (src/, models/)
+sys.path.insert(0, str(BACKEND_ROOT))
+
 # --------------------------------------------------
-# Data directory (SINGLE SOURCE OF TRUTH)
+# Data directory (inside lexidesk_chatbot)
 # --------------------------------------------------
 DATA_DIR = BACKEND_ROOT / "lexidesk_chatbot" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PAGES_JSONL = DATA_DIR / "lexidesk_pages.jsonl"
-CHUNKS_JSONL = DATA_DIR / "chunks.jsonl"
+SAVED_CHUNKS = DATA_DIR / "chunks.jsonl"
+
+# --------------------------------------------------
+# Dynamically import predict.py from backend/src
+# --------------------------------------------------
+PREDICT_PATH = BACKEND_ROOT / "src" / "predict.py"
+
+if not PREDICT_PATH.exists():
+    raise FileNotFoundError(f"predict.py not found at {PREDICT_PATH}")
+
+print("Loading predict.py from:", PREDICT_PATH)
+
+spec = importlib.util.spec_from_file_location("lexi_predict", str(PREDICT_PATH))
+predict = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(predict)
+
+# --------------------------------------------------
+# Choose sentence segmentation model
+# --------------------------------------------------
+model = predict.hybrid_crf_model or predict.baseline_crf_model
+use_hybrid = predict.hybrid_crf_model is not None
+
+print(
+    f"Model loaded | "
+    f"baseline={predict.baseline_crf_model is not None} "
+    f"hybrid={predict.hybrid_crf_model is not None} "
+    f"cnn={predict.cnn_model is not None}"
+)
 
 # --------------------------------------------------
 # PDF extraction
 # --------------------------------------------------
-def extract_pages_from_pdf(pdf_path: str) -> List[dict]:
+def extract_pages_from_pdf(pdf_path: str):
     doc = fitz.open(pdf_path)
     pages = []
 
-    for i, page in enumerate(doc):
-        text = page.get_text("text").strip()
-        if not text:
-            continue
-
+    for i in range(len(doc)):
         pages.append({
             "doc_id": Path(pdf_path).name,
             "page": i + 1,
-            "text": text,
+            "text": doc[i].get_text("text"),
         })
 
-    doc.close()
     return pages
-
 
 # --------------------------------------------------
 # Sentence segmentation
 # --------------------------------------------------
-def segment_pages(pages: List[dict]) -> List[dict]:
-    segmented = []
+def segment_pages(pages):
+    seg_fn = predict.segment_text
+    out = []
 
     for p in pages:
         try:
-            sentences = segment_text(p["text"])
-            if isinstance(sentences, tuple):
-                sentences = sentences[0]
-
+            sents = seg_fn(
+                p["text"],
+                model,
+                use_hybrid_features=use_hybrid
+            )
+            if isinstance(sents, tuple):
+                sents = sents[0]
         except Exception as e:
-            print(f"[WARN] Segmentation failed (page {p['page']}): {e}")
-            sentences = [
+            print(f"[WARN] SBD failed on page {p['page']} → fallback:", e)
+            sents = [
                 s.strip()
                 for s in re.split(r"(?<=[.!?])\s+", p["text"])
                 if s.strip()
             ]
 
-        if not sentences:
-            continue
-
-        segmented.append({
+        out.append({
             "doc_id": p["doc_id"],
             "page": p["page"],
-            "sentences": sentences,
+            "sentences": sents,
+            "text": p["text"],
         })
 
-    return segmented
-
+    return out
 
 # --------------------------------------------------
 # Chunking for RAG
 # --------------------------------------------------
-def chunk_pages(segmented_pages: List[dict], max_chars: int = 1600) -> List[dict]:
+def chunk_pages(segmented_pages, max_chars=1600):
     chunks = []
 
     for p in segmented_pages:
-        buffer = []
-        length = 0
+        cur, cur_len = [], 0
 
-        for sentence in p["sentences"]:
-            if length + len(sentence) > max_chars and buffer:
+        for s in p["sentences"]:
+            if cur_len + len(s) > max_chars and cur:
                 chunks.append({
                     "doc_id": p["doc_id"],
                     "page": p["page"],
-                    "text": " ".join(buffer),
+                    "text": " ".join(cur),
                 })
-                buffer = [sentence]
-                length = len(sentence)
+                cur = [s]
+                cur_len = len(s)
             else:
-                buffer.append(sentence)
-                length += len(sentence)
+                cur.append(s)
+                cur_len += len(s)
 
-        if buffer:
+        if cur:
             chunks.append({
                 "doc_id": p["doc_id"],
                 "page": p["page"],
-                "text": " ".join(buffer),
+                "text": " ".join(cur),
             })
 
     return chunks
 
-
 # --------------------------------------------------
-# Main ingestion logic
+# Core ingestion pipeline (shared by CLI & API)
 # --------------------------------------------------
-def run(pdf_paths: List[str]):
+def run(pdf_paths):
     all_pages = []
 
     for pdf in pdf_paths:
         all_pages.extend(extract_pages_from_pdf(pdf))
 
-    if not all_pages:
-        raise ValueError("No extractable text found in PDFs")
+    with open(PAGES_JSONL, "w", encoding="utf-8") as f:
+        for p in all_pages:
+            f.write(json.dumps(p, ensure_ascii=False) + "\n")
 
-    # Append pages
-    with open(PAGES_JSONL, "a", encoding="utf-8") as f:
-        for page in all_pages:
-            f.write(json.dumps(page, ensure_ascii=False) + "\n")
+    print(f"Saved {len(all_pages)} pages → {PAGES_JSONL}")
 
-    print(f"[Ingest] Saved {len(all_pages)} pages -> {PAGES_JSONL}")
+    seg_pages = segment_pages(all_pages)
+    chunks = chunk_pages(seg_pages)
 
-    segmented_pages = segment_pages(all_pages)
-    chunks = chunk_pages(segmented_pages)
+    with open(SAVED_CHUNKS, "w", encoding="utf-8") as f:
+        for c in chunks:
+            f.write(json.dumps(c, ensure_ascii=False) + "\n")
 
-    if not chunks:
-        raise ValueError("No chunks produced after segmentation")
+    print(f"Saved {len(chunks)} chunks → {SAVED_CHUNKS}")
 
-    # Append chunks
-    with open(CHUNKS_JSONL, "a", encoding="utf-8") as f:
-        for chunk in chunks:
-            f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
-
-    print(f"[Ingest] Saved {len(chunks)} chunks -> {CHUNKS_JSONL}")
-
-    return PAGES_JSONL, CHUNKS_JSONL
-
+    return PAGES_JSONL, SAVED_CHUNKS
 
 # --------------------------------------------------
-# FastAPI-compatible upload ingestion
+# FastAPI wrapper
 # --------------------------------------------------
-def ingest_document(upload_file) -> str:
+def ingest_document(upload_file):
+    """
+    Used by FastAPI /upload endpoint
+    """
     with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(upload_file.file.read())
+        shutil.copyfileobj(upload_file.file, tmp)
         tmp_path = tmp.name
 
     run([tmp_path])
+
     return Path(upload_file.filename).stem
+
+# --------------------------------------------------
+# CLI
+# --------------------------------------------------
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser("Ingest PDFs into LeXiDesk RAG")
+    parser.add_argument("pdfs", nargs="+", help="PDF files to ingest")
+    args = parser.parse_args()
+
+    run(args.pdfs)

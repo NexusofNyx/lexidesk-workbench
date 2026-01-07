@@ -1,246 +1,95 @@
 """
-Retriever + Gemini Answer Generator
-(LexiDesk – Windows-safe, stable version)
+FAISS Retriever with Lazy Loading
+Prevents import-time crashes if index doesn't exist yet.
 """
-
 from pathlib import Path
-import json
-import os
-import uuid
-from typing import List, Dict
-
-import chromadb
-from chromadb.config import Settings
+import pickle
+import faiss
 from sentence_transformers import SentenceTransformer
-
-import google.generativeai as genai
-
-# --------------------------------------------------
-# Load environment variables EARLY (reload-safe)
-# --------------------------------------------------
-BASE_BACKEND_DIR = Path(__file__).resolve().parents[1]
-ENV_PATH = BASE_BACKEND_DIR / ".env"
-
-if ENV_PATH.exists():
-    from dotenv import load_dotenv
-    load_dotenv(ENV_PATH)
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY not found in .env")
-
-genai.configure(api_key=GEMINI_API_KEY)
+from typing import List, Dict, Any, Optional
 
 # --------------------------------------------------
 # Paths
 # --------------------------------------------------
-DATA_DIR = BASE_BACKEND_DIR / "lexidesk_chatbot" / "data"
-CHUNKS_FILE = DATA_DIR / "chunks.jsonl"
-CHROMA_DIR = DATA_DIR / "chroma_db"
-
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+INDEX_DIR = REPO_ROOT / "index"
+FAISS_INDEX_PATH = INDEX_DIR / "faiss.index"
+METADATA_PATH = INDEX_DIR / "metadata.pkl"
 
 # --------------------------------------------------
-# Embedding model (LOAD ONCE)
+# Lazy-loaded globals (not loaded at import time!)
 # --------------------------------------------------
-EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
-embedder = SentenceTransformer(EMBED_MODEL_NAME)
+_embed_model: Optional[SentenceTransformer] = None
+_index: Optional[faiss.Index] = None
+_metadata: Optional[List[Dict[str, Any]]] = None
 
-# --------------------------------------------------
-# Chroma client (GLOBAL, SAFE)
-# --------------------------------------------------
-client = chromadb.Client(
-    Settings(
-        persist_directory=str(CHROMA_DIR),
-        anonymized_telemetry=False,
-    )
-)
 
-COLLECTION_NAME = "legal_docs"
-
-def get_collection():
-    """Always return a valid Chroma collection."""
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},
-    )
-
-# --------------------------------------------------
-# Index chunks into Chroma
-# --------------------------------------------------
-def index_chunks(force: bool = False):
+def _load_resources():
     """
-    Index chunks.jsonl into ChromaDB.
-    Safe to call multiple times.
+    Lazy-load the embedding model, FAISS index, and metadata.
+    Only runs once per process and is reload-safe.
     """
-    if force:
-        try:
-            client.delete_collection(COLLECTION_NAME)
-            print("🗑️ Existing Chroma collection deleted.")
-        except Exception:
-            pass
+    global _embed_model, _index, _metadata
 
-    collection = get_collection()
+    if _embed_model is None:
+        _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    if collection.count() > 0 and not force:
-        print("ℹ️ Chroma collection already indexed.")
-        return
-
-    if not CHUNKS_FILE.exists():
-        raise FileNotFoundError(f"❌ Missing chunks file: {CHUNKS_FILE}")
-
-    documents: List[str] = []
-    metadatas: List[Dict] = []
-    ids: List[str] = []
-
-    with CHUNKS_FILE.open("r", encoding="utf-8") as f:
-        for lineno, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
-
-            try:
-                chunk = json.loads(line)
-            except json.JSONDecodeError:
-                print(f"⚠️ Skipping malformed JSON at line {lineno}")
-                continue
-
-            text = (chunk.get("text") or "").strip()
-            if not text or len(text.split()) < 5:
-                continue
-
-            doc_id = str(chunk.get("doc_id") or "unknown_doc")
-            page = chunk.get("page")
-            page = page if isinstance(page, int) else -1
-
-            documents.append(text)
-            metadatas.append({
-                "doc_id": doc_id,
-                "page": page,
-                "source": doc_id,
-            })
-
-            # 🔐 Always unique → prevents 500 crashes
-            ids.append(str(uuid.uuid4()))
-
-    if not documents:
-        raise RuntimeError("❌ No valid text chunks found to index.")
-
-    print(f"🔢 Embedding {len(documents)} chunks...")
-
-    embeddings = embedder.encode(
-        documents,
-        normalize_embeddings=True,
-        show_progress_bar=True,
-    )
-
-    collection.add(
-        documents=documents,
-        embeddings=embeddings.tolist(),
-        metadatas=metadatas,
-        ids=ids,
-    )
-
-    client.persist()
-    print("✅ Chroma indexing complete.")
-
-# --------------------------------------------------
-# Retrieve top-k chunks
-# --------------------------------------------------
-def retrieve(query: str, top_k: int = 5) -> List[Dict]:
-    collection = get_collection()
-
-    if collection.count() == 0:
-        print("⚠️ Chroma collection is empty.")
-        return []
-
-    query_embedding = embedder.encode(
-        [query],
-        normalize_embeddings=True,
-    )
-
-    results = collection.query(
-        query_embeddings=query_embedding.tolist(),
-        n_results=top_k,
-    )
-
-    retrieved = []
-
-    if results.get("documents"):
-        for i in range(len(results["documents"][0])):
-            retrieved.append({
-                "text": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i],
-                "score": results["distances"][0][i],
-            })
-
-    if not retrieved:
-        print("⚠️ No relevant chunks found.")
-    else:
-        print(f"ℹ️ Retrieved {len(retrieved)} chunks:")
-        for r in retrieved:
-            print(
-                f"- Page {r['metadata']['page']} | "
-                f"{r['metadata']['doc_id']} | "
-                f"distance={r['score']:.4f}"
+    if _index is None:
+        if not FAISS_INDEX_PATH.exists():
+            raise FileNotFoundError(
+                f"FAISS index not found at {FAISS_INDEX_PATH}. "
+                "Please ingest documents first via /upload or run indexer.py."
             )
+        _index = faiss.read_index(str(FAISS_INDEX_PATH))
 
-    return retrieved
+    if _metadata is None:
+        if not METADATA_PATH.exists():
+            raise FileNotFoundError(
+                f"Metadata not found at {METADATA_PATH}. "
+                "Please run indexer.py after ingestion."
+            )
+        with open(METADATA_PATH, "rb") as f:
+            _metadata = pickle.load(f)
 
-# --------------------------------------------------
-# Gemini answer generation
-# --------------------------------------------------
-def generate_answer(query: str, retrieved_chunks: List[Dict]) -> str:
-    if not retrieved_chunks:
-        return "The provided documents do not contain this information."
 
-    context = "\n\n".join(
-        f"(Page {c['metadata']['page']}) {c['text']}"
-        for c in retrieved_chunks
-    )
+def reload_index():
+    """
+    Force reload of the index (useful after new ingestion).
+    Call this after build_index() if needed.
+    """
+    global _index, _metadata
+    _index = None
+    _metadata = None
+    _load_resources()
 
-    prompt = f"""
-You are a legal assistant.
 
-Answer using ONLY the information present in the context below.
-If the answer is not present, say exactly:
-"The provided documents do not contain this information."
+def retrieve(query: str, k: int = 5) -> List[Dict[str, Any]]:
+    """
+    Retrieve top-k most similar chunks from FAISS index.
 
-Context:
-{context}
+    Args:
+        query: User question or search query
+        k: Number of results to return
 
-Question:
-{query}
+    Returns:
+        List of dicts with keys: doc_id, page, text, distance, chunk_id
+    """
+    _load_resources()
 
-Answer:
-""".strip()
+    # Encode query
+    q_emb = _embed_model.encode([query]).astype("float32")
 
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    # Search FAISS
+    distances, indices = _index.search(q_emb, k)
 
-    try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        return f"❌ Gemini generation error: {e}"
+    results = []
+    for idx, dist in zip(indices[0], distances[0]):
+        if idx < 0 or idx >= len(_metadata):
+            continue  # Skip invalid indices
 
-# --------------------------------------------------
-# CLI testing
-# --------------------------------------------------
-if __name__ == "__main__":
-    index_chunks(force=True)
+        chunk = _metadata[idx].copy()
+        chunk["distance"] = float(dist)
+        chunk["chunk_id"] = int(idx)
+        results.append(chunk)
 
-    while True:
-        query = input("\nAsk a legal question (or 'exit'): ").strip()
-        if query.lower() == "exit":
-            break
-
-        retrieved = retrieve(query)
-        answer = generate_answer(query, retrieved)
-
-        print("\n" + "=" * 80)
-        print("ANSWER:\n")
-        print(answer)
-        print("\nSOURCES:\n")
-        for r in retrieved:
-            print(f"- Page {r['metadata']['page']} | {r['metadata']['doc_id']}")
+    return results

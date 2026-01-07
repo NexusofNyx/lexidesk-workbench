@@ -33,15 +33,25 @@ export interface ChatMessage {
   content: string;
 }
 
+// Request schema for /chat/qa
 export interface ChatRequest {
   question: string;
-  document_id?: string;
+  top_k?: number;
 }
 
+// Source chunk from FAISS retrieval
+export interface SourceChunk {
+  doc_id: string;
+  page: number;
+  text: string;
+  distance: number;
+  chunk_id: number;
+}
+
+// Response schema for /chat/qa
 export interface ChatResponse {
   answer: string;
-  relevant_passages?: string[];
-  sources?: string[];
+  sources: SourceChunk[];
 }
 
 export interface DocumentUploadResponse {
@@ -129,16 +139,21 @@ export async function uploadDocument(file: File): Promise<DocumentUploadResponse
 }
 
 // ----------------------------
-// Chat / RAG Q&A
+// Chat / RAG Q&A (CORRECT)
 // ----------------------------
 export async function sendChatMessage(
   question: string,
-  documentId?: string
+  topK: number = 5
 ): Promise<ChatResponse> {
-  const response = await fetch(`${API_BASE_URL}/chat`, {
+  const response = await fetch(`${API_BASE_URL}/chat/qa`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, document_id: documentId }),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      question,
+      top_k: topK,
+    }),
   });
 
   if (!response.ok) {

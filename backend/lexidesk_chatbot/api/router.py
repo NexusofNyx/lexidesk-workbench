@@ -1,124 +1,185 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+"""
+Chatbot Router - Production Grade
+POST /chat/qa - RAG-based Q&A with FAISS retrieval
 
-from lexidesk_chatbot.retrieval.retriever import (
-    retrieve,
-    generate_answer
+Supports:
+- OpenAI GPT-4o-mini (if OPENAI_API_KEY is set)
+- Google Gemini 1.5 Pro (if GEMINI_API_KEY is set)
+- Fallback to retrieval-only mode
+"""
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from pathlib import Path
+import os
+
+# --------------------------------------------------
+# Router initialization
+# --------------------------------------------------
+router = APIRouter(
+    prefix="/chat",
+    tags=["Chatbot"]
 )
 
-router = APIRouter(prefix="/chat", tags=["Chatbot"])
-
 # --------------------------------------------------
-# Schemas
+# Request / Response Schemas
 # --------------------------------------------------
-
 class QARequest(BaseModel):
-    question: str
-    top_k: Optional[int] = 5
+    question: str = Field(..., min_length=1)
+    top_k: Optional[int] = Field(default=5, ge=1, le=50)
 
-
-class Source(BaseModel):
-    text: str
-    metadata: Dict[str, Any]
-    score: float
+    class Config:
+        extra = "ignore"  # Prevents 422 from extra frontend keys
 
 
 class QAResponse(BaseModel):
     answer: str
-    sources: List[Source]
+    sources: List[Dict[str, Any]]
 
 
 # --------------------------------------------------
-# POST /chat
+# LLM Client Loader (SAFE + MODERN)
 # --------------------------------------------------
+def get_llm_client():
+    """
+    Returns (client, provider)
+    provider ∈ {"openai", "gemini", None}
+    """
 
-@router.post("", response_model=QAResponse)
-def chat(req: QARequest):
-    # ------------------------------
-    # 0. Validate input
-    # ------------------------------
-    if not req.question.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Question cannot be empty"
-        )
-
-    # ------------------------------
-    # 1. Retrieve chunks
-    # ------------------------------
-    try:
-        raw_chunks = retrieve(
-            query=req.question,
-            top_k=req.top_k or 5
-        )
-    except Exception as e:
-        print("❌ Retrieval error:", e)
-        raise HTTPException(
-            status_code=500,
-            detail="Vector retrieval failed"
-        )
-
-    if not raw_chunks:
-        return QAResponse(
-            answer="The provided documents do not contain this information.",
-            sources=[]
-        )
-
-    # ------------------------------
-    # 2. Normalize chunks
-    # ------------------------------
-    sources: List[Source] = []
-    gemini_chunks: List[Dict[str, Any]] = []
-
-    for chunk in raw_chunks:
+    # ---------- OpenAI ----------
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
         try:
-            score = float(chunk.get("score", chunk.get("distance", 0.0)))
+            from openai import OpenAI
+            return OpenAI(api_key=openai_key), "openai"
+        except Exception:
+            pass
 
-            metadata = chunk.get("metadata") or {}
+    # ---------- Gemini (NEW SDK) ----------
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        try:
+            from google import genai
+            client = genai.Client(api_key=gemini_key)
+            return client, "gemini"
+        except Exception:
+            pass
 
-            sources.append(
-                Source(
-                    text=chunk["text"],
-                    metadata=metadata,
-                    score=score
-                )
+    return None, None
+
+
+# --------------------------------------------------
+# LLM Generation
+# --------------------------------------------------
+def generate_answer(question: str, context: str) -> str:
+    client, provider = get_llm_client()
+
+    prompt = (
+        "You are a legal assistant.\n"
+        "Answer ONLY using the provided context.\n"
+        "If the answer is not present, say:\n"
+        "'I cannot find this information in the provided documents.'\n\n"
+        f"CONTEXT:\n{context}\n\n"
+        f"QUESTION:\n{question}"
+    )
+
+    # ---------- OpenAI ----------
+    if provider == "openai":
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=512,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
+
+    # ---------- Gemini ----------
+    if provider == "gemini":
+        try:
+            response = client.models.generate_content(
+                model="gemini-1.5-pro",
+                contents=[
+                    {
+                        "role": "user",
+                        "parts": [{"text": prompt}]
+                    }
+                ],
+            )
+            return response.text.strip()
+        except Exception as e:
+            print(f"[WARN] Gemini error: {e}")
+            return (
+                "LLM generation failed. Showing retrieved passages only.\n\n"
+                + context[:1000]
+                + ("..." if len(context) > 1000 else "")
             )
 
-            # 🔑 Gemini MUST receive dicts, not Pydantic objects
-            gemini_chunks.append({
-                "text": chunk["text"],
-                "metadata": metadata
-            })
+    # ---------- No LLM ----------
+    return (
+        "No LLM API key configured (OPENAI_API_KEY or GEMINI_API_KEY).\n\n"
+        "Showing retrieved passages only."
+    )
 
-        except Exception as e:
-            print("⚠️ Skipping malformed chunk:", chunk, e)
 
-    if not gemini_chunks:
+# --------------------------------------------------
+# Main Q&A Endpoint
+# --------------------------------------------------
+@router.post("/qa", response_model=QAResponse)
+def qa(req: QARequest):
+    print(f"[/chat/qa] question='{req.question[:50]}...' top_k={req.top_k}")
+
+    # ---------- Retrieval ----------
+    try:
+        from lexidesk_chatbot.retrieval.retriever import retrieve
+        docs = retrieve(req.question, k=req.top_k)
+    except FileNotFoundError:
         return QAResponse(
-            answer="The provided documents do not contain this information.",
+            answer="No documents have been indexed yet. Please upload a PDF first.",
+            sources=[]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")
+
+    if not docs:
+        return QAResponse(
+            answer="I cannot find this information in the provided documents.",
             sources=[]
         )
 
-    # ------------------------------
-    # 3. Generate Answer
-    # ------------------------------
-    try:
-        answer = generate_answer(
-            query=req.question,
-            retrieved_chunks=gemini_chunks
-        )
-    except Exception as e:
-        print("❌ Gemini error:", e)
-        raise HTTPException(
-            status_code=500,
-            detail="Answer generation failed"
-        )
+    # ---------- Build Context ----------
+    context = "\n\n".join(
+        f"[Source: {d.get('doc_id')} | Page {d.get('page')}]\n{d.get('text')}"
+        for d in docs
+    )
 
-    # ------------------------------
-    # 4. Response
-    # ------------------------------
+    # ---------- Generate Answer ----------
+    answer = generate_answer(req.question, context)
+
     return QAResponse(
         answer=answer,
-        sources=sources
+        sources=docs
     )
+
+
+# --------------------------------------------------
+# Health Check
+# --------------------------------------------------
+@router.get("/health")
+def chatbot_health():
+    client, provider = get_llm_client()
+
+    index_exists = (
+        Path(__file__).resolve().parents[1]
+        / "index"
+        / "faiss.index"
+    ).exists()
+
+    return {
+        "chatbot": "ok",
+        "llm_provider": provider or "none",
+        "index_exists": index_exists,
+    }

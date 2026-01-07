@@ -8,6 +8,8 @@ transformers
 torch
 streamlit
 openai
+google-generativeai
 joblib
 scikit-learn
 sklearn-crfsuite
+python-dotenv
