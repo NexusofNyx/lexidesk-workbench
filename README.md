@@ -1,73 +1,84 @@
-# Welcome to your Lovable project
+# LeXIDesk Workbench
 
-## Project info
+LeXIDesk is a legal text analysis platform that uses advanced NLP models (CNN-CRF) for sentence boundary detection and summarization. This project consists of a React frontend and a Python FastAPI backend.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## 🚀 Quick Start
 
-## How can I edit this code?
+### 1. Prerequisites
+- **Node.js** (v18+)
+- **Python** (v3.9+)
 
-There are several ways of editing your application.
+### 2. Setup Frontend
+The frontend is built with Vite + React + TypeScript.
 
-**Use Lovable**
+```bash
+# Install dependencies
+npm install
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+# Start the frontend development server
 npm run dev
 ```
+The frontend will run at `http://localhost:5173`.
 
-**Edit a file directly in GitHub**
+### 3. Setup Backend
+The backend is built with FastAPI and handles the ML inference.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+#### Windows (PowerShell)
+```powershell
+# 1. Create a virtual environment (if not already created)
+python -m venv backend/venv
 
-**Use GitHub Codespaces**
+# 2. Activate the virtual environment
+.\backend\venv\Scripts\Activate
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+# 3. Install dependencies
+pip install -r backend/requirements.txt
 
-## What technologies are used for this project?
+# 4. Start the backend server
+python -m uvicorn backend.main:app --reload --port 8000
+```
 
-This project is built with:
+#### macOS / Linux
+```bash
+# 1. Create a virtual environment
+python3 -m venv backend/venv
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+# 2. Activate
+source backend/venv/bin/activate
 
-## How can I deploy this project?
+# 3. Install dependencies
+pip install -r backend/requirements.txt
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+# 4. Start server
+uvicorn backend.main:app --reload --port 8000
+```
 
-## Can I connect a custom domain to my Lovable project?
+The backend API will run at `http://localhost:8000`.
+API Documentation (Swagger UI) is available at: `http://localhost:8000/docs`
 
-Yes, you can!
+---
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+## 🛠️ Project Structure
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+```
+lexidesk-workbench/
+├── backend/               # Python Backend
+│   ├── models/            # ML Models (CNN, CRF)
+│   ├── src/               # Model source code
+│   ├── main.py            # FastAPI Entry point
+│   └── requirements.txt   # Python Dependencies
+├── src/                   # React Frontend
+│   ├── components/        # UI Components
+│   ├── pages/             # Application Pages
+│   └── lib/               # API Clients
+└── package.json           # Frontend Dependencies
+```
+
+## ✨ helper Commands
+
+We have added a helper script in `package.json` to run the backend easily on Windows:
+
+```bash
+# Run the backend server (Windows)
+npm run backend
+```

@@ -21,9 +21,10 @@ export default function SentenceDetection() {
 
     setIsLoading(true);
     try {
+      // Call backend API
       const result = await detectSentences(inputText);
       setSentences(result.sentences);
-      toast.success(`Detected ${result.count} sentences`);
+      toast.success(`Detected ${result.count} sentence${result.count > 1 ? 's' : ''}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to detect sentences';
       toast.error(errorMessage, {
@@ -42,6 +43,7 @@ export default function SentenceDetection() {
   };
 
   const handleCopyAll = async () => {
+    if (sentences.length === 0) return;
     const allText = sentences.map((s, i) => `${i + 1}. ${s}`).join('\n\n');
     await navigator.clipboard.writeText(allText);
     toast.success('All sentences copied to clipboard');
@@ -90,7 +92,7 @@ export default function SentenceDetection() {
               Load Sample
             </button>
           </div>
-          
+
           <textarea
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
